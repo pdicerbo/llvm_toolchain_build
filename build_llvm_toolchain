@@ -1,0 +1,156 @@
+#!/bin/bash
+
+#   FOR LOCAL BUILDS:
+# docker run --rm -v $(pwd):/srv/llvm_toolchain_build -w /srv/llvm_toolchain_build -it redhat/ubi8
+# alias ls='ls --color=auto'
+# ./build_llvm_toolchain 2>&1 | tee bld.log
+
+LLVM_VERSION=17.0.6
+LLVM_BASE_DIR=$(pwd)
+LLVM_ROOT_DIR=$LLVM_BASE_DIR/llvm-srcs-$LLVM_VERSION
+LLVM_SRCS_DIR=$LLVM_ROOT_DIR/llvm
+LLVM_BUILD_DIR=$LLVM_BASE_DIR/llvm-build
+LLVM_RPMS_DIR=$LLVM_BASE_DIR/rpms
+LLVM_PARALLEL_LINK_JOBS=8
+
+echo -e "  installing basic packages\n\n"
+
+# install basic utilities: glibc-devel is
+yum install -y glibc-devel procps-ng
+yum install -y git cmake rpm-build python39 wget
+yum install -y clang
+ln -s /usr/bin/python3 /usr/bin/python
+yum install -y binutils zlib-devel
+set -ex
+
+# create utility folders
+mkdir -p $LLVM_BUILD_DIR $LLVM_RPMS_DIR
+cd $LLVM_BUILD_DIR
+rm -rf * .ninja*
+
+# install ninja
+wget https://github.com/ninja-build/ninja/releases/download/v1.11.1/ninja-linux.zip
+unzip ninja-linux.zip
+mv ninja /usr/bin
+rm -rf ninja-linux.zip ninja-linux
+
+
+# if needed, download source files
+if [ ! -d "$LLVM_ROOT_DIR" ]; then
+    echo "${LLVM_ROOT_DIR} not present, downloading sources..."
+    git clone --recursive --depth 1 --branch llvmorg-$LLVM_VERSION https://github.com/llvm/llvm-project.git $LLVM_ROOT_DIR
+fi
+
+#           LLVM BASE BUILD:
+# start compiling a full LLVM toolchain via two stage build
+# the generated compiler will depend by force on the gcc runtime libraries (libgcc_s),
+# but it will have the benefit of the LTO
+#
+# properly set LLVM_INSTALL_DIR and CMAKE_CACHE_FILE
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-tmp-build"
+CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/base_stage0.cmake"
+cmake -G Ninja -C $CMAKE_CACHE_FILE \
+        -D BOOTSTRAP_CMAKE_INSTALL_PREFIX="$LLVM_INSTALL_DIR" \
+        -D BOOTSTRAP_LLVM_PARALLEL_LINK_JOBS=$LLVM_PARALLEL_LINK_JOBS \
+        $LLVM_SRCS_DIR
+
+ninja -v stage2-install
+
+rm -rf * .ninja*
+
+yum remove -y clang
+
+# # use the built compiler to recompile everything
+cp -r $LLVM_INSTALL_DIR/* /usr/local
+
+
+#############################################################################
+#                                                                           #
+#                                                                           #
+#                   BAD TRICK TO OBTAIN RPM PACKAGE                         #
+#                                                                           #
+#                                                                           #
+#   There are many Python scripts in this package which use                 #
+#   '/usr/bin/env python' to access the system Python which                 #
+#   on LFS is Python-3.10.2. Forced to use python3                          #
+#                                                                           #
+#############################################################################
+grep -rl '#!.*python' $LLVM_ROOT_DIR | xargs sed -i '1s/python$/python3/'
+
+function build_rpm_package {
+    if [ $# -ne 3 ]; then
+        echo -e "\nbad build_rpm_package function call; usage:\n\n\t build_rpm_package LLVM_INSTALL_DIR CMAKE_CACHE_FILE SPEC\n\n"
+        exit 42
+    fi
+
+    set -ex
+
+    LLVM_INSTALL_DIR=$1
+    CMAKE_CACHE_FILE=$2
+    SPEC=$3
+
+    if [ ! -f "$CMAKE_CACHE_FILE" ]; then
+        echo "file ${CMAKE_CACHE_FILE} not found, build failed; exiting..."
+        exit 23
+    fi
+
+    if [ ! -d "$LLVM_SRCS_DIR" ]; then
+        echo "file ${LLVM_SRCS_DIR} not found, build failed; exiting..."
+        exit 23
+    fi
+
+    # start build
+    mkdir -p $LLVM_BUILD_DIR
+    cd $LLVM_BUILD_DIR
+    rm -rf * .ninja*
+
+    cmake -G Ninja \
+        -C $CMAKE_CACHE_FILE \
+        -D CPACK_GENERATOR="RPM" \
+        -D CMAKE_INSTALL_PREFIX="$LLVM_INSTALL_DIR" \
+        -D LLVM_PARALLEL_LINK_JOBS=$LLVM_PARALLEL_LINK_JOBS \
+        $LLVM_SRCS_DIR
+
+    ninja package install
+
+    # rename rpm package
+    mv LLVM-${LLVM_VERSION}-Linux.rpm LLVM-${LLVM_VERSION}-$SPEC-Linux.rpm
+    
+    # move package into rpms folder
+    mv LLVM-${LLVM_VERSION}-$SPEC-Linux.rpm $LLVM_RPMS_DIR
+}
+
+#           LLVM WITH DEBUG AND ASSERTION STAGE BUILD:
+# using the previously build compiler, trigger the last toolchain build
+# that will not depend on the gcc runtime
+#
+# properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/dev-toolchain.cmake"
+SPEC="DEV"
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
+build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
+
+#           LLVM WITH LTO STAGE BUILD:
+# using the previously build compiler, trigger the last toolchain build
+# that will not depend on the gcc runtime
+#
+# properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/std-toolchain.cmake"
+SPEC="STD"
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
+build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
+
+#           LLVM AND STD LIBRARY WITH LTO STAGE BUILD:
+# using the previously build compiler, trigger the last toolchain build
+# that will not depend on the gcc runtime
+#
+# properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/full_lto-toolchain.cmake"
+SPEC="LTO"
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
+build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
+
+git config --global --add safe.directory $LLVM_ROOT_DIR
+
+cd $LLVM_ROOT_DIR
+git restore *

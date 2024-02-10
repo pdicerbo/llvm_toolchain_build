@@ -1,0 +1,6 @@
+llvm-srcs.*/*
+llvm-build/*
+llvm-*-build/*
+llvm-*install
+*.log
+rpms/*
