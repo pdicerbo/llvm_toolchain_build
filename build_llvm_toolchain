@@ -5,6 +5,21 @@
 # alias ls='ls --color=auto'
 # ./build_llvm_toolchain 2>&1 | tee bld.log
 
+#############################################################################
+#                                                                           #
+#                                                                           #
+#                               PHASE 0                                     #
+#                                                                           #
+#   - Define utility variables                                              #
+#   - Download LLVM source files (if needed)                                #
+#   - install base packages for build toolchain, in particular:             #
+#       - cmake                                                             #
+#       - ninja                                                             #
+#       - clang                                                             #
+#       - binutils                                                          #
+#       - zlib-devel                                                        #
+#                                                                           #
+#############################################################################
 LLVM_VERSION=17.0.6
 LLVM_BASE_DIR=$(pwd)
 LLVM_ROOT_DIR=$LLVM_BASE_DIR/llvm-srcs-$LLVM_VERSION
@@ -41,14 +56,26 @@ if [ ! -d "$LLVM_ROOT_DIR" ]; then
     git clone --recursive --depth 1 --branch llvmorg-$LLVM_VERSION https://github.com/llvm/llvm-project.git $LLVM_ROOT_DIR
 fi
 
-#           LLVM BASE BUILD:
-# start compiling a full LLVM toolchain via two stage build
-# the generated compiler will depend by force on the gcc runtime libraries (libgcc_s),
-# but it will have the benefit of the LTO
-#
+#############################################################################
+#                                                                           #
+#                                                                           #
+#                               PHASE 1                                     #
+#                                                                           #
+#   - Compile a "Base" LLVM toolchain by means of two stage build:          #
+#       the generated toolchain will depend by force                        #
+#       on gcc runtime libraries (libgcc_s), but it will have               # 
+#       the benefit of the LTO                                              #
+#   - remove the clang package installed with yum                           #
+#   - install the just built toolchain                                      #
+#                                                                           #
+#                                                                           #
+#############################################################################
+
 # properly set LLVM_INSTALL_DIR and CMAKE_CACHE_FILE
 LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-tmp-build"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/base_stage0.cmake"
+
+
 cmake -G Ninja -C $CMAKE_CACHE_FILE \
         -D BOOTSTRAP_CMAKE_INSTALL_PREFIX="$LLVM_INSTALL_DIR" \
         -D BOOTSTRAP_LLVM_PARALLEL_LINK_JOBS=$LLVM_PARALLEL_LINK_JOBS \
@@ -60,7 +87,7 @@ rm -rf * .ninja*
 
 yum remove -y clang
 
-# # use the built compiler to recompile everything
+# use the built compiler to recompile everything
 cp -r $LLVM_INSTALL_DIR/* /usr/local
 
 
@@ -77,6 +104,28 @@ cp -r $LLVM_INSTALL_DIR/* /usr/local
 #############################################################################
 grep -rl '#!.*python' $LLVM_ROOT_DIR | xargs sed -i '1s/python$/python3/'
 
+
+#############################################################################
+#                                                                           #
+#                                                                           #
+#                               PHASE 2                                     #
+#                                                                           #
+#   - Compile three different LLVM toolchain;                               #
+#       each toolchain has its own CMake Cache file;                        #
+#       considering the STD toolchain as the "base" toolchain,              #
+#       the other CMake Cache files differs only for a minimal              #
+#       number of settings                                                  #
+#                                                                           #
+#       STD: "standard" toolchain                                           # 
+#       DEV: libcxx it compiled with Assertion enabled                      # 
+#       LTO: libcxx is compiled with LTO                                    # 
+#   - restore the llvm source repository..                                  #
+#                                                                           #
+#                                                                           #
+#############################################################################
+
+
+# function that
 function build_rpm_package {
     if [ $# -ne 3 ]; then
         echo -e "\nbad build_rpm_package function call; usage:\n\n\t build_rpm_package LLVM_INSTALL_DIR CMAKE_CACHE_FILE SPEC\n\n"
@@ -85,15 +134,18 @@ function build_rpm_package {
 
     set -ex
 
-    LLVM_INSTALL_DIR=$1
-    CMAKE_CACHE_FILE=$2
-    SPEC=$3
+    # extract parameters:
+    LLVM_INSTALL_DIR=$1     # LLVM install dir
+    CMAKE_CACHE_FILE=$2     # CMake Cache file
+    SPEC=$3                 # "name" of the toolchain distribution
 
+    # check if the provided CMakeCache file exists
     if [ ! -f "$CMAKE_CACHE_FILE" ]; then
         echo "file ${CMAKE_CACHE_FILE} not found, build failed; exiting..."
         exit 23
     fi
 
+    # check if the source folder exists
     if [ ! -d "$LLVM_SRCS_DIR" ]; then
         echo "file ${LLVM_SRCS_DIR} not found, build failed; exiting..."
         exit 23
@@ -120,36 +172,28 @@ function build_rpm_package {
     mv LLVM-${LLVM_VERSION}-$SPEC-Linux.rpm $LLVM_RPMS_DIR
 }
 
-#           LLVM WITH DEBUG AND ASSERTION STAGE BUILD:
-# using the previously build compiler, trigger the last toolchain build
-# that will not depend on the gcc runtime
-#
+#           LLVM WITH DEBUG AND ASSERTION BUILD:
 # properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/dev-toolchain.cmake"
 SPEC="DEV"
-LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
 
-#           LLVM WITH LTO STAGE BUILD:
-# using the previously build compiler, trigger the last toolchain build
-# that will not depend on the gcc runtime
-#
+#           LLVM STD BUILD:
 # properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/std-toolchain.cmake"
 SPEC="STD"
-LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
 
-#           LLVM AND STD LIBRARY WITH LTO STAGE BUILD:
-# using the previously build compiler, trigger the last toolchain build
-# that will not depend on the gcc runtime
-#
+#           LLVM WITH STD LIBRARY WITH LTO STAGE BUILD:
 # properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/full_lto-toolchain.cmake"
 SPEC="LTO"
-LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
 
+# clean env and exit
 git config --global --add safe.directory $LLVM_ROOT_DIR
 
 cd $LLVM_ROOT_DIR
