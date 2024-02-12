@@ -174,23 +174,23 @@ function build_rpm_package {
 
 #           LLVM WITH DEBUG AND ASSERTION BUILD:
 # properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+SPEC="DEV"
 LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/dev-toolchain.cmake"
-SPEC="DEV"
 build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
 
 #           LLVM STD BUILD:
 # properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+SPEC="STD"
 LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/std-toolchain.cmake"
-SPEC="STD"
 build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
 
 #           LLVM WITH STD LIBRARY WITH LTO STAGE BUILD:
 # properly set LLVM_INSTALL_DIR, CMAKE_CACHE_FILE and SPEC
+SPEC="LTO"
 LLVM_INSTALL_DIR="$LLVM_BASE_DIR/llvm-$LLVM_VERSION-$SPEC-toolchain-install"
 CMAKE_CACHE_FILE="$LLVM_BASE_DIR/cmake_caches/full_lto-toolchain.cmake"
-SPEC="LTO"
 build_rpm_package $LLVM_INSTALL_DIR $CMAKE_CACHE_FILE $SPEC
 
 # clean env and exit
